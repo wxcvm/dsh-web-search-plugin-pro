@@ -1,0 +1,53 @@
+From faadb7d4a491167a5058401a2021f6c87e9f786c Mon Sep 17 00:00:00 2001
+From: wxcvm <133561272+wxcvm@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 21:56:38 +0800
+Subject: [PATCH 3/4] feat(search): label the backend auto actually used
+
+---
+ lib/index.js | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/lib/index.js b/lib/index.js
+index c73884c..672c3ab 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -75,6 +75,8 @@ const Config = z.object({
+ 	autoOrder: z.string().default("tavily,brave,serper,exa,searxng,firecrawl,deepseek-official").volatile(),
+ 	/** `auto` mode: how long a backend that just failed is skipped, in milliseconds. */
+ 	autoCooldownMs: z.number().step(1000).min(0).default(60000).volatile(),
++	/** `auto` mode: append the backend that answered to the result content. */
++	autoAnnotate: z.boolean().default(true).volatile(),
+ 	/** Tavily auth mode: `keyless` (default) or `keyed`. */
+ 	mode: z.string().default("keyless").volatile(),
+ 	/** Literal Tavily API key; prefer {@link apiKeyEnv}. */
+@@ -206,7 +208,9 @@ class PluginSearchProvider {
+ 				const result = await backend.search(request, signal);
+ 				if (result.sources.length > 0) {
+ 					this.cooldownUntil.delete(id);
+-					return result;
++					if (options.autoAnnotate === false) return result;
++					const note = `(auto: ${id})`;
++					return { ...result, content: result.content === void 0 || result.content.length === 0 ? note : `${result.content}\n\n${note}` };
+ 				}
+ 				failures.push(`${id}: no results`);
+ 			} catch (error) {
+@@ -291,6 +295,8 @@ function resolveOptions(ctx, config) {
+ 	return {
+ 		provider,
+ 		autoOrder,
++		autoAnnotate: config.autoAnnotate !== false,
++		autoCooldownMs: config.autoCooldownMs ?? 60000,
+ 		deepseek: provider === "deepseek-official" || provider === "auto" ? resolveDeepseekOptions(ctx, config) : void 0,
+ 		tavily,
+ 		brave: provider === "brave" ? resolveBraveOptions(ctx, config) : void 0,
+@@ -346,6 +352,7 @@ function readSection(config) {
+ 		provider: config.provider.get(),
+ 		autoOrder: config.autoOrder.get(),
+ 		autoCooldownMs: config.autoCooldownMs.get(),
++		autoAnnotate: config.autoAnnotate.get(),
+ 		mode: config.mode.get(),
+ 		apiKey: config.apiKey.get(),
+ 		apiKeyEnv: config.apiKeyEnv.get(),
+-- 
+2.55.0.windows.5
+

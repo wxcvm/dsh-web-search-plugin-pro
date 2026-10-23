@@ -1,0 +1,152 @@
+From a2ca3c53a5f5064485ffc9a5c8dd4a8e89faca5f Mon Sep 17 00:00:00 2001
+From: wxcvm <133561272+wxcvm@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 21:56:38 +0800
+Subject: [PATCH 1/4] feat(search): full-text snippets, visible provider
+ errors, one retry, HTML diagnosis
+
+---
+ lib/providers.js |  3 ++
+ lib/rest.js      | 71 ++++++++++++++++++++++++++++++++++++------------
+ 2 files changed, 57 insertions(+), 17 deletions(-)
+
+diff --git a/lib/providers.js b/lib/providers.js
+index 29e41c8..dedf1c0 100644
+--- a/lib/providers.js
++++ b/lib/providers.js
+@@ -66,6 +66,9 @@ export const REST_PROVIDERS = [
+ 			{ key: "topic", setting: "topic", when: "nonEmpty" },
+ 			{ key: "include_answer", setting: "includeAnswer", when: "nonEmpty" },
+ 			{ key: "include_images", value: false, when: "always" },
++			// Keyed Tavily can return the whole page as markdown; the generic
++			// parser upgrades a thin `content` teaser with it (see lib/rest.js).
++			{ key: "include_raw_content", value: "markdown", when: "keyed" },
+ 			{ key: "include_usage", value: true, when: "keyed" }
+ 		],
+ 		keylessHeaders: { "x-tavily-access-mode": "keyless" },
+diff --git a/lib/rest.js b/lib/rest.js
+index ab50e53..401424a 100644
+--- a/lib/rest.js
++++ b/lib/rest.js
+@@ -19,6 +19,15 @@ import { WebError } from "@deepseek-ai/dsh-web";
+ import { ProxyAgent } from "undici";
+ import { MAX_RESULTS_CAP, USER_AGENT, isAbortError, resolveApiKey, resolveSecret, searchAborted, throwIfSearchAborted } from "./shared.js";
+ 
++/** One retry for a transient status: free tiers answer 429/503 constantly. */
++const RETRY_DELAY_MS = 800;
++/** Cap on honouring a provider's `Retry-After` header. */
++const MAX_RETRY_DELAY_MS = 5000;
++/** A teaser shorter than this is replaced by the provider's full text. */
++const SNIPPET_UPGRADE_BELOW = 400;
++/** Hard cap on a snippet built from full page text. */
++const SNIPPET_CHARS = 1200;
++
+ /** Acceptable auth templates (superset includes `query` for SerpApi). */
+ const AUTH_TYPES = new Set(["bearer", "header", "none", "query"]);
+ 
+@@ -110,7 +119,7 @@ function mapCustomResponse(json, response) {
+ 	}
+ 	for (const item of results) {
+ 		if (item === null || typeof item !== "object") continue;
+-		const snippet = str(item.content).length > 0
++		const teaser = str(item.content).length > 0
+ 			? item.content
+ 			: str(item.snippet).length > 0
+ 				? item.snippet
+@@ -123,6 +132,13 @@ function mapCustomResponse(json, response) {
+ 							: Array.isArray(item.extra_snippets) && str(item.extra_snippets[0]).length > 0
+ 								? item.extra_snippets[0]
+ 								: "";
++		// Providers that can return full page text (Tavily `raw_content`, Firecrawl
++		// markdown) replace a thin teaser: two lines of snippet is what forces a
++		// second `web_fetch` round-trip for every single source.
++		const fullText = str(item.raw_content).length > 0 ? item.raw_content : str(item.markdown).length > 0 ? item.markdown : "";
++		const snippet = fullText.length > 0 && teaser.length < SNIPPET_UPGRADE_BELOW
++			? fullText.slice(0, SNIPPET_CHARS)
++			: teaser;
+ 		pushSource(sources, seen, item, item.title, snippet, item.published_date ?? item.date ?? item.page_age ?? item.publishedDate);
+ 	}
+ 	const answer = str(json.answer).length > 0
+@@ -228,19 +244,28 @@ export class RestSearchProvider {
+ 		else if (keylessWhen === "" || keylessWhen === "always") Object.assign(headers, keylessHeaders);
+ 
+ 		const dispatcher = this.dispatcher(options);
+-		let httpResponse;
+-		try {
+-			httpResponse = await fetch(endpoint, {
+-				method,
+-				redirect: "error",
+-				headers,
+-				...(body !== void 0 ? { body } : {}),
+-				...signal !== void 0 ? { signal } : {},
+-				...dispatcher !== void 0 ? { dispatcher } : {}
+-			});
+-		} catch (error) {
+-			if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
+-			throw new WebError(`Provider "${this.id}" request failed: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
++		const send = async () => {
++			try {
++				return await fetch(endpoint, {
++					method,
++					redirect: "error",
++					headers,
++					...(body !== void 0 ? { body } : {}),
++					...signal !== void 0 ? { signal } : {},
++					...dispatcher !== void 0 ? { dispatcher } : {}
++				});
++			} catch (error) {
++				if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
++				throw new WebError(`Provider "${this.id}" request failed: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
++			}
++		};
++		let httpResponse = await send();
++		if (httpResponse.status === 429 || httpResponse.status === 503 || httpResponse.status >= 500) {
++			const retryAfter = Number(httpResponse.headers.get("retry-after"));
++			const delay = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, MAX_RETRY_DELAY_MS) : RETRY_DELAY_MS;
++			await new Promise((resolve) => setTimeout(resolve, delay));
++			throwIfSearchAborted(signal);
++			httpResponse = await send();
+ 		}
+ 
+ 		this.hooks.onRateLimit?.(httpResponse.headers);
+@@ -248,15 +273,24 @@ export class RestSearchProvider {
+ 			let message = `Provider "${this.id}" API error (HTTP ${httpResponse.status})`;
+ 			try {
+ 				const parsed = await httpResponse.json();
++				// Error bodies are not standardized: `{error:"text"}` (OpenAI/xAI),
++				// `{error:{message}}`, `{detail:{error}}`, or a bare `{code}`.
+ 				const detail = parsed?.detail?.error ?? parsed?.error ?? parsed?.message ?? parsed?.search_metadata?.error;
+-				if (typeof detail === "string" && detail.length > 0) message = detail;
+-				else if (typeof detail === "object" && detail != null && typeof detail.message === "string") message = detail.message;
++				const detailText = typeof detail === "string" && detail.length > 0
++					? detail
++					: typeof detail === "object" && detail != null && typeof detail.message === "string" && detail.message.length > 0
++						? detail.message
++						: typeof parsed?.code === "string" && parsed.code.length > 0
++							? parsed.code
++							: "";
++				if (detailText.length > 0) message = `Provider "${this.id}" API error (HTTP ${httpResponse.status}): ${detailText}`;
+ 			} catch {
+ 				/* non-JSON error body — keep the status-line message */
+ 			}
+ 			throw new WebError(message, "WEB_PROVIDER_ERROR");
+ 		}
+ 
++		const contentType = httpResponse.headers.get("content-type") ?? "";
+ 		try {
+ 			const json = await httpResponse.json();
+ 			if (responseHint === "tavily" && typeof this.hooks.onUsage === "function") {
+@@ -270,7 +304,10 @@ export class RestSearchProvider {
+ 		} catch (error) {
+ 			if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
+ 			if (error instanceof WebError) throw error;
+-			throw new WebError(`Provider "${this.id}" returned an unprocessable response body: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
++			if (contentType.includes("html")) {
++				throw new WebError(`Provider "${this.id}" answered with HTML, not JSON - a SearXNG instance with format=json disabled looks like this; point searxngBaseURL at a JSON-enabled instance`, "WEB_PROVIDER_ERROR", { cause: error });
++			}
++			throw new WebError(`Provider "${this.id}" returned an unprocessable response body (content-type: ${contentType || "unknown"}): ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
+ 		}
+ 	}
+ 
+-- 
+2.55.0.windows.5
+

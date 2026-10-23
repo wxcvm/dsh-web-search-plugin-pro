@@ -1,0 +1,133 @@
+From b84a096df7258ad0069369178cfb566c31fa5139 Mon Sep 17 00:00:00 2001
+From: wxcvm <133561272+wxcvm@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 21:56:38 +0800
+Subject: [PATCH 4/4] docs: patch notes with apply and rollback steps
+
+---
+ docs/README-patch.md | 114 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 114 insertions(+)
+ create mode 100644 docs/README-patch.md
+
+diff --git a/docs/README-patch.md b/docs/README-patch.md
+new file mode 100644
+index 0000000..bf1375e
+--- /dev/null
++++ b/docs/README-patch.md
+@@ -0,0 +1,114 @@
++# dsh-web-search-plugin 0.6.0 → 0.6.0-pro
++
++对 `dsh-web-search-plugin@0.6.0` 的小改，目标是**少一轮 web_fetch、少一次瞎猜、少一次因为单个引擎挂了就失败**。
++
++- 补丁 1（稳健性）：`dsh-web-search-plugin-0.6.0-pro.patch`（6.8 KB）
++- 补丁 2（自动路由）：`auto-routing.patch`（22 KB，打在补丁 1 之上）
++- 一次到位：`combined-pro.patch`（36 KB，直接打在 0.6.0 原版上）
++- 改后全文：`wsp-patch/lib/{providers,rest,index,client}.js`
++- 基线：`C:\Users\Kerna\.dsh\profiles\desktop\node_modules\dsh-web-search-plugin`（v0.6.0）
++- 依赖：无新增。`providers.js +3`、`rest.js +57/−17`、`index.js +82/−15`、`client.js +10/−2`
++
++## 补丁 2：`auto` 自动路由
++
++以前 `provider` 只能填一个引擎，那个引擎挂了（限流、没 key、额度空）整次搜索就废。现在多了 `auto`：
++
++- **顺序尝试**，第一个返回结果的赢
++- **失败冷却**：抛错的引擎进黑名单 `autoCooldownMs`（默认 60 秒），期间跳过
++- **0 结果也算失败**，继续下一个
++- **全挂时报聚合错误**，每个引擎的失败原因列在一行里
++- 顺序可配：`autoOrder`，默认 `tavily,brave,serper,exa,searxng,firecrawl,deepseek-official`
++
++> `deepseek-official` 排在最后是刻意的：它每搜一次是一整个模型轮次（实测 ~12s、按 token 计费），只配当兜底。
++
++配置项（`cordis.patch.yml` 或设置卡片保存的 section）：
++
++```yaml
++provider: auto
++autoOrder: "tavily,brave,serper,exa,searxng,firecrawl,deepseek-official"
++autoCooldownMs: 60000
++```
++
++设置页的引擎下拉里也多了 **Auto（按顺序取第一个可用引擎）**，选中后下方有说明文字。
++
++## 补丁 1：稳健性
++
++### 1. 有 key 的 Tavily 现在会取正文
++`providers.js`，Tavily 的 `params` 里加了一条（`when: "keyed"`，无 key 的 keyless 模式不受影响，避免 400）：
++
++```js
++{ key: "include_raw_content", value: "markdown", when: "keyed" }
++```
++
++配套在 `rest.js` 里把 `raw_content` / `markdown` 映射进 `snippet`：**短于 400 字的 teaser 会被整段正文替换，上限 1200 字**。以前每条只有两行，逼得每次都要再 `web_fetch` 一遍。
++
++### 2. 错误信息不再被吞
++以前：
++
++```
++Provider "xai" API error (HTTP 403)
++```
++
++现在（`{code, error:"字符串"}`、`{error:{message}}`、`{detail:{error}}` 都能取到，并带上 provider id）：
++
++```
++Provider "tavily" API error (HTTP 403): personal-team-blocked:spending-limit
++```
++
++### 3. 429/503/5xx 重试一次
++按 `Retry-After` 退避（上限 5s），没有该头就等 800ms 再打一次。免费引擎的 429 太常见，直接抛给模型等于浪费一整个回合。
++
++### 4. SearXNG 返回 HTML 时说人话
++`searx.be` 已经关了 `format=json`，以前只会抛 `unprocessable response body`。现在会明确说：
++
++> answered with HTML, not JSON - a SearXNG instance with format=json disabled looks like this; point searxngBaseURL at a JSON-enabled instance
++
++顺带在所有解析失败里带上 `content-type`，方便判断是反爬还是格式变更。
++
++## 怎么用
++
++### 方式 A：打补丁到现有安装（临时、会被升级覆盖）
++
++```powershell
++$p = "C:\Users\Kerna\.dsh\profiles\desktop\node_modules\dsh-web-search-plugin"
++Copy-Item $p "$p.bak" -Recurse -Force
++cd $p
++git apply "D:\deepseek\dsh-plugins\dsh-web-search-plugin-0.6.0-pro.patch"
++```
++
++回滚：`Remove-Item $p -Recurse -Force; Move-Item "$p.bak" $p`
++
++> 该目录不是 git 仓库，`git apply` 仍可用（它只读 patch，不要求仓库）。若报 `not a git repository`，改用 `patch -p1 < ...` 或直接拷贝 `wsp-patch/lib/*.js` 覆盖。
++
++### 方式 B：直接覆盖文件（最省事）
++
++```powershell
++$p = "C:\Users\Kerna\.dsh\profiles\desktop\node_modules\dsh-web-search-plugin\lib"
++Copy-Item "D:\deepseek\dsh-plugins\wsp-patch\lib\providers.js" $p -Force
++Copy-Item "D:\deepseek\dsh-plugins\wsp-patch\lib\rest.js" $p -Force
++```
++
++改完**重启 DSH**（web profile 关了 HMR，刷新页面不够）。
++
++### 方式 C：做成自己的 fork（推荐长期）
++
++```powershell
++Copy-Item "C:\Users\Kerna\.dsh\profiles\desktop\node_modules\dsh-web-search-plugin" "D:\dsh-plugins\dsh-web-search-plugin-pro" -Recurse
++# 改 package.json 的 name 为 dsh-web-search-plugin-pro，避免和上游同包名
++# 把 patched 的两个 lib 文件覆盖进去
++# 然后在 cordis.patch.yml 里把原插件那一行换成新名字
++```
++
++## 验证
++
++```powershell
++node --check lib/providers.js
++node --check lib/rest.js
++```
++
++两条都过。补丁已用 `git apply --check` 在 0.6.0 原样副本上验证过：干净应用。
++
++## 还没做的（留给下一步）
++
++- 结果缓存（5 分钟 LRU）——要动 `index.js` 的路由层，改动比现在这四处大
++- 真正的图片搜索——`web_search` 的 schema 在 `dsh-tool-web`，插件层塞不进去；已由 `dsh-web-images` 独立工具覆盖
+-- 
+2.55.0.windows.5
+
