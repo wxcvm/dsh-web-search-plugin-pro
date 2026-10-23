@@ -1,0 +1,82 @@
+{
+  "name": "dsh-web-search-plugin",
+  "version": "0.6.0",
+  "description": "Web search and retrieval settings for DeepSeek Harness: DeepSeek Search API, Messages, eight search backends, local HTTP and DeepSeek Fetch API",
+  "icon": "./assets/icon.svg",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "tavily",
+    "brave",
+    "brave-search",
+    "web-search",
+    "websearch",
+    "search",
+    "plugin"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "assets",
+    "lib",
+    "locale",
+    "cordis.patch.yml",
+    "CHANGELOG.md",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "scripts": {
+    "check": "node --check lib/config.js && node --check lib/index.js && node --check lib/client.js && node --check lib/shared.js && node --check lib/providers.js && node --check lib/rest.js && node --check lib/tavily.js && node --check lib/brave.js && node --check lib/deepseek.js && node --check lib/usage.js",
+    "test": "node --experimental-vm-modules --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "undici": "^6.21.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-web": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-settings": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-launch-environment": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "@deepseek-ai/cordis": "~4.0.4"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/X-C1811/dsh-web-search-plugin.git"
+  },
+  "homepage": "https://github.com/X-C1811/dsh-web-search-plugin",
+  "bugs": {
+    "url": "https://github.com/X-C1811/dsh-web-search-plugin/issues"
+  }
+}

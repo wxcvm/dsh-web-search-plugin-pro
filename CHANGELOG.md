@@ -1,0 +1,218 @@
+# 更新日志
+
+本项目的重要变更都记录在此。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
+
+## [未发布]
+
+## [0.6.0] - 2026-10-20
+
+### 新增
+
+- “设置 → 网页搜索”保留一个入口，页面分为“搜索引擎”和“网页抓取”，统一暂存、保存和放弃修改。
+- 新增 DeepSeek Search API 搜索选项，复用 DSH `0.2.1-rc.2` 的官方提供方，无辅助模型轮次；现有第三方引擎和 DeepSeek Messages 搜索继续保留。
+- 网页抓取可独立选择本地 HTTP（默认）或官方 DeepSeek Fetch API；不自动联动搜索与抓取，也不自动回退到付费接口。
+- 新版 Search / Fetch 共用官方 `web-deepseek-api` 的密钥引用和基础地址，与旧 Messages 参数分别保存；不提供这套配置的 Host 禁用新版 API 选项。
+
+### 变更
+
+- 四个 DSH peer 范围显式接纳 `0.2.1-rc.2`，保留 `0.2.0-rc.2`；包版本与 User-Agent 更新为 `0.6.0`。
+- DeepSeek Messages 搜索显式关闭辅助思考，与 rc.2 官方行为一致。
+- 跨配置区域保存时先保存引擎和 API 参数，再以同一 `web` mutation 提交所修改的提供方选择；各区域使用各自 revision，失败保留草稿并提示可能已有部分设置保存。
+- 保持原有安装默认值和用户选择，新增 API 由用户主动选择；不迁移旧 Messages 端点或模型配置。
+- 下拉选项使用“DeepSeek Messages 搜索（默认）”与“DeepSeek Search API”，标明默认项，不附加推荐标记。
+
+## [0.5.1] - 2026-10-10
+
+### 新增
+
+- 自定义网页搜索图标：采用与官方图标协调的蓝绿渐变和地球放大镜造型，通过包元数据提供给插件列表、详情及包含的组件。
+
+### 变更
+
+- DeepSeek 官方搜索默认模型更新为 `deepseek-flash`，同步 Host 配置、后端回退、设置卡和中英文 README；保留用户显式配置的模型名。
+- 供应商专用配置统一增加前缀：Tavily 使用 `tavily*`，DeepSeek 搜索选项使用 `deepseek*`，Brave 使用 `brave*`；Scavio 的地区与语言选项独立为 `scavioCountry`、`scavioSearchLang`。通用的 `provider`、`maxResults` 保持不变。
+- 保留旧字段兼容读取；新字段优先，包括显式空字符串和 `false`。设置卡保存新名称，恢复默认时处理当前 Profile 的旧别名，并保留另一引擎依赖的旧共享地区或语言值。
+- 设置卡隐藏 API 协议版本输入框，保留 `deepseekApiVersion` 高级配置与旧 `apiVersion` 兼容。
+
+### 文档
+
+- README 提供英文主版与独立中文版，补充插件优势、设置卡配置步骤和配置范围；优先建议在卡片中选择 DeepSeek（官方），需要恢复 Harness 内置插件时再关闭整个组合包。
+
+## [0.5.0] - 2026-10-09
+
+### 新增
+
+- **适配 DeepSeek Harness `0.2.0-rc.2`**：四个 DSH peerDependencies 提升到 `^0.2.0-rc.2`，`@deepseek-ai/cordis` / `@deepseek-ai/schemastery` 对齐 `~4.0.4` / `~3.18.4`；版本号与 `User-Agent` 更新为 `0.5.0`。
+- DeepSeek 后端支持账号令牌认证：会话 provider 为 `deepseek-account` 时通过 `deepseekAccount.resolveToken()` 获取令牌并以 `x-dsh-auth-token` 发送，未授权时回落到 `DEEPSEEK_API_KEY`。
+- 有会话发起者时，DeepSeek 搜索在派发前记录脱敏请求到会话事件 `web/deepseek-search-llm-request`，与官方 provider 行为一致。
+- 插件列表页与详情页的标题、描述随界面语言切换：`locale/en.json` 与 `locale/zh.json`，经 `"./locale/*.json"` 导出（与官方 bundle 同一机制）。卡片内文案由 `lib/client.js` 的 `zh` / `en` 字典提供。
+- README 整理：修正与实现脱节的仓库布局与安装说明。
+
+### 移除
+
+- **`settings.installSection()` 已从 Harness 移除**：Host 侧改为全部配置字段声明 `volatile()`，并在 `apply` 中通过 `config.<field>.get()` 读取实时值。插件不再调用 `ctx.inject(["settings"])`，也不再维护 `setSource` / `current()` 这条配置来源链。
+- **客户端 `settingsScope` 服务已移除**：浏览器端改用 `ctx.configForms`。设置分区通过 `configForms.whileServed([namespace], register)` 条件注册，Host 未下发该命名空间时不留痕迹。`inject` 中的 `settingsScope` 同步替换为 `configForms`。
+- 设置分区不再自行注册 Host 设置卡：0.2.x 的设置由当前 Profile 的插件配置保存，`client.js` 的分区只负责展示与写入。
+
+### 修复
+
+- Exa 请求改用 `numResults` 与对象形态的 `contents.highlights`；SearXNG 不再发送其 API 未定义的 `count` 参数。
+- 插件 `maxResults` 与调用方上限取较小值，避免常规 `web_search` 请求覆盖设置卡上限；未选中的引擎不再解析其凭据引用，设置卡校验引用名格式。
+- Tavily 用量只保留当前凭据的内存数据，换 key 后立即重新对账；手动刷新限速改为 10 秒，自动刷新不受手动限速约束。
+- Firecrawl 搜索按 API 要求发送数组形态的 `sources`；REST 元数据的空 `countParam` 不再被强制改为 `max_results`。
+- DeepSeek 与 REST 后端按配置的 `maxResults` 截取超额结果，并标记 `truncated`。
+- 网页搜索设置分区随 Host 配置命名空间出现和撤销；凭据写入失败时保留草稿并显示失败提示。
+- 同时修改凭据引用名与 API key 时，密钥写入新的引用名；DeepSeek 账号令牌预检响应取消并统一映射错误。
+- Tavily 与 DeepSeek 的空端点配置恢复环境变量回退；Tavily 手动刷新额度增加最短请求间隔。
+- 设置卡把配置改动按同一 revision 原子提交；Host 拒绝写入时保留草稿，保存期间锁定编辑。写入新凭据时清空该引擎的字面量 key 覆盖，使新凭据生效。
+- 更新 Serper 冒烟脚本，使用当前导出的 `RestSearchProvider` 与内置元数据。
+
+### 文档
+
+- 澄清本插件注册的接缝 id 是 `dsh-web-search`，`deepseek-official` 只是内部引擎选项；同步修正 bundle patch、卸载说明和会话事件说明。
+- 对齐 README 的端点默认值、环境变量优先级和 API key 保存位置。
+
+### 说明
+
+- `cordis.patch.yml` 禁用内置 `web-search-deepseek`，使此 bundle 统一管理 DeepSeek 搜索配置；本插件注册的接缝 id 为 `dsh-web-search`。
+- Bundle patch 仍使用单文件声明（0.1.7 起支持的多文件有序声明为可选能力，未启用）。
+
+## [0.4.1] - 2026-09-10
+
+### 变更
+
+- **适配 DeepSeek Harness `0.1.5-rc.1`**：四个 DSH peerDependencies 提升到 `^0.1.5-rc.1`，Node.js 运行要求对齐为 `^22.19.0 || >=24.0.0`。
+- 浏览器端显式注入 `remote.credentials`，避免 API remote 尚未挂载时访问凭据服务的启动顺序竞态。
+- Bundle 覆盖 `web.config` 时保留上游 `fetchProvider: http`，不再因切换搜索 provider 而隐式清除抓取 provider。
+- Brave 的 `proxy` 仅作为 provider 级显式覆盖；留空时继承 DSH 的全局代理分发器，统一支持 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`。
+- 版本号及 `User-Agent` 更新为 `0.4.1`。
+
+## [0.4.0] - 2026-09-02
+
+### 变更
+
+- **适配 DeepSeek Harness 最新 main（`0.1.2-alpha.4`）**：`@deepseek-ai/dsh-settings` 已移除顶层 `installSettingsSection` / `settingsNamespace`，Host 侧改为在 `ctx.inject(['settings'])` 后调用 `settingsCtx.settings.installSection(ctx, ...)`；settings namespace 直接使用普通字符串。
+- **浏览器端移除对 `@deepseek-ai/dsh-client-runtime` / 旧 `connection` 的依赖**：该包已不在最新 Harness workspace / 客户端模块表中。`createSnapshotStore` 改从平台常驻模块 `@deepseek-ai/dsh-client-store` 导入；`dsh.client.inject` 与客户端 `inject` 对齐为 `slots` / `locale` / `remote` / `settingsScope`。
+- **凭据远端接口迁移到 `ctx.remote`**：`credentials.describe(refs[])` / `set(ref, value)` 使用最新 Remote 参数与响应形状（`{ ok, value }`）；凭据变更事件从 `credentials/updated` 改为 `credentials/reference-updated`；不再经旧 `connection.api` 调用。
+- peerDependencies 中 dsh 包版本从 `0.1.0-rc.7` 提升到 `0.1.2-alpha.4`；`@deepseek-ai/cordis` / `@deepseek-ai/schemastery` 分别对齐 `^4.0.2` / `^3.18.2`；版本号升至 `0.4.0`，`User-Agent` 同步。
+
+## [0.3.1] - 2026-08-30
+
+### 修复
+
+- **Tavily keyless 模式失效**：通用 REST 后端不再在 keyless 模式下强制解析 API key；无 key 时只发送 `x-tavily-access-mode: keyless`，可正常使用免费额度。
+- **POST 类 provider 的 count 参数类型错误**：Tavily `max_results`、Serper `num`、Exa `num_results`、Firecrawl `limit` 等在 JSON body 中恢复为数字，不再被强转字符串。
+- **Scavio / Firecrawl 设置卡严重卡死**：补齐浏览器端缺失的 `scavioApiKeyEnv` / `scavioBaseURL` / `firecrawlApiKeyEnv` / `firecrawlBaseURL` 表单字段与投影，修复切换后输入框无法输入、引擎无法切换的问题。
+- **Scavio / Firecrawl 默认凭据名错误**：未显式填写 keyEnv 时分别回退到 `SCAVIO_API_KEY` / `FIRECRAWL_API_KEY`，不再错误使用 `EXA_API_KEY`。
+- **Brave 环境代理回退丢失**：恢复 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量回退，未显式配置 `proxy` 时也能按环境代理请求。
+- `User-Agent` 更新为 `0.3.1`。
+
+### 优化
+
+- 内置 REST 渠道（Serper / SerpApi / Exa / SearXNG / Scavio / Firecrawl）的 Base URL 默认值预填到设置卡，切换渠道后不再是空 URL。
+
+## [0.3.0] - 2026-08-25
+
+### 新增
+
+- **内置 REST provider 元数据化**（`lib/providers.js` 静态表 + `lib/rest.js` 通用后端）：内置 REST 供应商由单一元数据表驱动，新增即"表里加一行 + 官方跳转链接"，零定制执行代码。
+  - 新增内置 provider：**Serper / SerpApi / Exa / SearXNG / Scavio / Firecrawl**（`provider` 值 `serper` / `serpapi` / `exa` / `searxng` / `scavio` / `firecrawl`）。
+  - Firecrawl 响应 `data.web[]` 走专用 `firecrawl` 解析分支；Scavio 复用 `organic_results` 解析。
+  - DuckDuckGo 无官方 API：下拉以禁用项提示经 SearXNG 使用，不提供独立后端。
+  - 元数据字段：`method`（GET/POST）/ `queryIn`（query-string / body）/ `queryParam` / `countParam` / `params[]`（`when: always` / `nonEmpty` / `keyed` / `keyless`，受限谓词清单）/ `auth.type`（bearer / header / none / **query**）/ `response` / `hooks` / `officialUrl`。
+  - 通用后端 `RestSearchProvider` 接管 brave / tavily / serper / serpapi / exa / searxng / scavio / firecrawl；`deepseek-official`（模型工具型）仍走专用 `lib/deepseek.js`。
+  - Tavily 额度回传、Brave 限流头/代理作为可选 hook 注入，通用体不写死业务逻辑。
+  - 设置卡对需要 key 的内置 provider 渲染「获取 API key ↗」跳官方控制台；免 key 的（SearXNG / Tavily keyless）不渲染。
+
+### 变更
+
+- **默认引擎从 `tavily` 改为 `deepseek-official`**：schema 默认、服务端/客户端回退、bundle patch 初始值一致改为官方默认（已保存的显式 `provider` 不被覆盖）。
+- `provider` 取值扩展为 `tavily` / `brave` / `deepseek-official` / `serper` / `serpapi` / `exa` / `searxng` / `scavio` / `firecrawl`。
+- **修复 Tavily `include_answer` 类型错误**：`params[]` 布尔值不再强转字符串，请求体发真布尔（`true`/`false`），兼容 Tavily API 对 `include_answer` / `include_images` / `include_usage` 的类型要求。
+- **修复 SearXNG 卡片误显「获取 API key ↗」**：仅需要 key 的 provider 才显示获取 key 跳转，免 key 的（SearXNG / Tavily keyless）不显示。
+- **收紧未配置 key 的提示文案**：placeholder 缩短为「未配置密钥」，补充说明移至输入框下方提示，避免溢出。以下未纳入内置：TinyFish、Google CSE、SERPJET（官网不可访问）、DuckDuckGo（无官方 API，经 SearXNG 使用）。
+
+## [0.2.1] - 2026-08-18
+
+相对 0.2.0 的补丁：设置卡补上额度进度条、两列布局和输入校验，并收紧空态文案。
+
+### 新增
+
+- 设置导航「网页搜索」补上地球 logo（与 dsh-credits 相同的 nav mask 做法）。
+- **Tavily keyed 额度**：搜索请求带 `include_usage`，把本次 credits 累加到本地高水位；每 10 分钟拉一次 `GET /usage`（计划名 / `plan_limit`），显示 `max(本地, 远端)`。换计划或远端用量回落视为新周期。
+- **Brave 额度**：从搜索响应的 `X-RateLimit-*` 解析月配额、剩余量和重置时间，写入本地缓存。
+- 设置卡在搜索引擎切换下方展示进度条（已用/剩余、重置时间、绿/黄/红提醒）。DeepSeek 官方与 Tavily keyless 不展示。
+
+### 变更
+
+- 设置卡同一区域的短配置改为两列（搜索引擎/认证、API key/凭据名、深度/主题、国家/语言、模型/版本等）；Base URL、代理仍单行。
+- 去掉卡片顶部说明文案；**结果数量**改为 1–20 下拉。
+- 国家/语言、代理的「留空…」改到输入框 placeholder，字段下方不再重复。Brave 额度卡把「月请求不限额 / 重置时间」收进卡片内。
+
+### 修复
+
+- 保存按钮在「看起来可点、实际 disabled」时没有反馈。现在始终可点（只读或保存中除外），成功/无变更/失败都会弹出 toast，对齐 dsh-credits。
+- 未保存草稿对齐官方插件卡：卡片右上角「未保存」角标、字段「已覆盖 / 恢复默认」，离开设置页再回来仍保留草稿，可继续保存或放弃。
+- Tavily keyed 额度卡在 `plan_limit` 尚未拉到时会把已用量藏成「未公布限额 / —」。本地扣费现在会直接显示「已用 N」；首次填入套餐名不再把本地计数清零。
+- Brave 月限额 `0` 的套餐按控制台 **Capacity** 展示每秒窗口（例如 50 次/秒），不再把月配额渲染成「已用 0 / 0」。Brave 没有花费/credits 接口。
+- 数字框只接受不小于 1 的整数；非法输入用红色错误文案替换灰色 hint，保存会被拦住。超出 20 的结果数量会夹到上限。
+
+## [0.2.0] - 2026-08-18
+
+### 新增
+
+- **DeepSeek（官方）后端**（`lib/deepseek.js`）。设置项 `provider: deepseek-official` 走 DeepSeek 的 Anthropic 兼容 Messages API（原生 `web_search_20250305` 工具，凭据名 `DEEPSEEK_API_KEY`）。bundle 层顺带禁用内置 `web-search-deepseek` Host 插件，从而移除旧的「插件 → 网页搜索」卡片、避免重复注册 provider。
+- **顶层「设置 → 网页搜索」分区**。配置入口从「设置 → 插件 → 插件配置」里的 keyed 卡片改为 `settings.section`（id `web-search`）——与「插件」分区同级，一张卡内切换 DeepSeek / Tavily / Brave，并各自展开对应配置项（模型、API 版本、max tokens / max uses 等）。
+
+### 变更
+
+- `provider` 取值扩展为 `deepseek-official` / `tavily`（默认）/ `brave`；接缝 id 仍为 `dsh-web-search`。
+- 新增 `lib/deepseek.js`；`package.json` 版本号 bump 到 `0.2.0`，`check` 脚本纳入新文件。
+
+## [0.1.2] - 2026-08-18
+
+### 新增
+
+- **Brave Search 后端**（`lib/brave.js`）。设置项 `provider: brave` 会调用 Brave Search API（`X-Subscription-Token`，凭据名 `BRAVE_API_KEY`），与 Tavily 共用同一张设置卡。默认仍是 Tavily。
+- **Bundle 层**（`cordis.patch.yml` + `dsh.bundle.patch`）：`dsh plugin add` 会把本包加入 profile 层栈、插入 Host 行，并把 `web.searchProvider` 设为 `dsh-web-search`。没有这一层时，DSH 只把它当普通依赖安装（没有 loader 行、Host 不会 `apply`、也不会提供 `/plugins/dsh-web-search-plugin/client.js`）。
+- 接缝 id 固定为 **`dsh-web-search`**。Tavily 与 Brave 的切换是插件自己的设置，不必再改一次 `web.searchProvider`。
+
+### 修复
+
+- **不再写入自定义 session 事件。** 社区 Brave 插件每次搜索都会 `append("web/brave-search-request")`；该类型不在 DSH 已知事件表里，且 `Session.append` 无法加上 `ignorable: true`，冷加载会整段拒绝会话。
+
+### 变更
+
+- Host 代码拆到 `lib/index.js` / `lib/tavily.js` / `lib/brave.js` / `lib/shared.js`。
+
+## [0.1.1] - 2026-08-18
+
+### 新增
+
+- **GitHub Actions 发布**（`.github/workflows/publish.yml`）：推送 `v*` 标签会带 provenance 发布到 npm；`ci.yml` 在每次推送/PR 上跑语法检查和 pack dry-run。
+
+### 修复
+
+- **客户端 bundle 缺少 `exports.inject`**（`lib/client.js`）。浏览器插件原先只导出 `apply`，cordis 的 `fiber.inject` 为空，访问 `ctx.locale` 等服务会抛 `cannot get property "locale" without inject`。现在导出 `inject = ["slots", "locale", "remote", "settingsScope"]`。
+- **插件卡片的 slot 注册**（`lib/client.js`）。卡片按 rc.6 的 `id`/`order` 形状注册进 `settings.plugin.item`；该 slot 从 rc.6+ 起是 keyed 的，必须带 `key: "dsh-web-search-plugin"`。
+- **`CardForm.field("apiKey")` 崩溃**（`lib/client.js`）。只写凭据字段没有 section spec，对 `undefined` 调用 `spec.format(...)` 会在卡片投影时抛 `Cannot read properties of undefined (reading 'format')`。已加上 secret 字段分支（对齐官方 `CardForm`）。
+- **`dsh.client.inject` 补上 `@deepseek-ai/dsh-client-ui-slots`**（`package.json`），与社区插件的加载集合一致。
+
+### 变更
+
+- 不再需要 rc.6 那种给 `dsh-host-apiproxy` 打设置命名空间白名单的补丁：rc.7 的 `settings.describe()` 会动态暴露已注册的 namespace。
+- **更名为 `dsh-web-search-plugin`**：包名与仓库名对齐；插件 id、设置 namespace、卡片 key 同步改名，全程只用一个身份。当时尚未对外发过版，这次改名没有迁移成本。
+
+## [0.1.0] - 2026-08-18
+
+### 新增
+
+- 首个版本：`TavilySearchProvider`（id 为 `tavily`）注册进 `ctx.web`，带 `dsh-web-search-plugin` 设置段。
+- Keyless 模式（`X-Tavily-Access-Mode: keyless`）与 keyed 模式（通过 `TAVILY_API_KEY` 凭据引用发送 Bearer token）。
+- DSH 插件配置页上的浏览器设置卡片。
+
+[0.2.1]: https://github.com/X-C1811/dsh-web-search-plugin/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/X-C1811/dsh-web-search-plugin/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/X-C1811/dsh-web-search-plugin/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/X-C1811/dsh-web-search-plugin/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/X-C1811/dsh-web-search-plugin/releases/tag/v0.1.0

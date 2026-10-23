@@ -1,0 +1,31 @@
+# Bundle layer applied by `dsh plugin add` once this package is a profile
+# dependency. Without this file (and package.json `dsh.bundle.patch`), DSH
+# installs the package as a plain library: no loader row, no Host apply, no
+# `/plugins/<name>/client.js`.
+#
+# `searchProvider` and the upstream `fetchProvider` are restated in full
+# because a Cordis patch replaces the targeted row's whole `config`. The
+# profile's own cordis.patch.yml still wins if it later overrides `web`. The
+# seam id is `dsh-web-search`; the backend (DeepSeek / Tavily / Brave) is the
+# plugin's own `provider` setting.
+# The settings page can independently override searchProvider to
+# deepseek-search-api and fetchProvider to deepseek-fetch-api on rc.2 Hosts.
+# Keep these defaults for existing profiles; API choices are opt-in.
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    searchProvider: dsh-web-search
+    fetchProvider: http
+
+# This bundle selects its own `dsh-web-search` seam provider and configures
+# DeepSeek through that provider. Disable the in-box DeepSeek host plugin so
+# the profile has one active DeepSeek configuration surface. Its provider id
+# is `deepseek-official`, distinct from this bundle's `dsh-web-search` id.
+- id: web-search-deepseek
+  disabled: true
+
+- insert:
+    - id: dsh-web-search-plugin
+      name: dsh-web-search-plugin
+      config:
+        provider: deepseek-official
