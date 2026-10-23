@@ -1,4 +1,17 @@
-# dsh-web-search-plugin
+# dsh-web-search-plugin-pro
+
+> **本仓库是 [`X-C1811/dsh-web-search-plugin`](https://github.com/X-C1811/dsh-web-search-plugin) v0.6.0 的加强分支。**
+> 相对上游多了四件事，改动集中、无新增依赖：
+>
+> 1. **更厚的 snippet** —— 有 key 的 Tavily 取正文（`include_raw_content`），短摘要自动升级为最长 1200 字正文
+> 2. **错误不再被吞** —— `{error:"文本"}` / `{code}` 也能读到，并带上 provider id（`HTTP 403` 后面会跟真正原因）
+> 3. **自动路由 `auto`** —— 按 `autoOrder` 顺序试，第一个出结果的赢；失败的引擎冷却 60s；全挂时抛聚合错误
+> 4. **命中标注** —— `auto` 结果末尾附 `(auto: tavily)`，`autoAnnotate: false` 可关
+>
+> 另外：429/503/5xx 重试一次（尊重 `Retry-After`）；SearXNG 返回 HTML 时明确提示「实例关了 format=json」。
+>
+> 安装、配置与只打补丁的方式见 [`docs/INSTALL.md`](./docs/INSTALL.md)。
+
 
 English | [中文](./README.zh.md)
 
