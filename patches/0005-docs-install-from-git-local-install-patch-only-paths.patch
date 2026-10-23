@@ -1,0 +1,665 @@
+From b8feb70aed62d0fc9d40afea6b5fe138053a6a75 Mon Sep 17 00:00:00 2001
+From: wxcvm <133561272+wxcvm@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 21:57:27 +0800
+Subject: [PATCH 5/5] docs: install from git, local install, patch-only paths
+
+---
+ docs/INSTALL.md                               |  56 +++++
+ ...-text-snippets-visible-provider-erro.patch | 152 ++++++++++++
+ ...-routing-with-per-backend-cooldown-a.patch | 220 ++++++++++++++++++
+ ...label-the-backend-auto-actually-used.patch |  53 +++++
+ ...-notes-with-apply-and-rollback-steps.patch | 133 +++++++++++
+ 5 files changed, 614 insertions(+)
+ create mode 100644 docs/INSTALL.md
+ create mode 100644 patches/0001-feat-search-full-text-snippets-visible-provider-erro.patch
+ create mode 100644 patches/0002-feat-search-auto-routing-with-per-backend-cooldown-a.patch
+ create mode 100644 patches/0003-feat-search-label-the-backend-auto-actually-used.patch
+ create mode 100644 patches/0004-docs-patch-notes-with-apply-and-rollback-steps.patch
+
+diff --git a/docs/INSTALL.md b/docs/INSTALL.md
+new file mode 100644
+index 0000000..5e3fdb3
+--- /dev/null
++++ b/docs/INSTALL.md
+@@ -0,0 +1,56 @@
++# 安装与推送
++
++## 这是什么
++
++`dsh-web-search-plugin@0.6.0` 的加强分支（MIT，上游 `X-C1811/dsh-web-search-plugin`）。
++在 0.6.0 基础上做了四件事，全部是本地改动、无新增依赖：
++
++| 补丁 | 内容 |
++|---|---|
++| `0001` | 有 key 的 Tavily 取正文（`include_raw_content`），短摘要自动升级为长正文；错误体里 `{error:"文本"}`/`{code}` 能被读到并带上 provider id；429/503/5xx 重试一次（尊重 `Retry-After`）；SearXNG 返回 HTML 时明确报「实例关了 format=json」 |
++| `0002` | 新增 `auto` 路由：按 `autoOrder` 顺序试，第一个出结果的赢；失败的引擎冷却 `autoCooldownMs`（默认 60s）；全挂时抛聚合错误 |
++| `0003` | `auto` 命中后结果末尾标注 `(auto: tavily)`，`autoAnnotate: false` 可关 |
++| `0004` | 本文档与补丁说明 |
++
++## 从 GitHub 安装
++
++```powershell
++dsh plugin --profile web add github:wxcvm/dsh-web-search-plugin-pro
++```
++
++装上之后重启 DSH（web profile 关掉了 HMR，刷新页面不算重启）。
++
++> 包名仍是 `dsh-web-search-plugin`（沿用上游，方便做 fork）。**不能和原插件同时装**——同名包会互相覆盖，且两者都注册 `dsh-web-search` 这个 provider id。升级前先 `dsh plugin remove dsh-web-search-plugin`。
++
++## 本地安装（不打 tag 也行）
++
++```powershell
++git clone https://github.com/wxcvm/dsh-web-search-plugin-pro
++dsh plugin --profile web add ./dsh-web-search-plugin-pro
++```
++
++## 只想要补丁
++
++```powershell
++cd "C:\Users\Kerna\.dsh\profiles\desktop\node_modules\dsh-web-search-plugin"
++git apply 0001-*.patch 0002-*.patch 0003-*.patch
++```
++
++`patches/` 里是 `git format-patch` 产物，可 `git am` 保留提交信息。
++
++## 配置
++
++```yaml
++provider: auto
++autoOrder: "tavily,brave,serper,exa,searxng,firecrawl,deepseek-official"
++autoCooldownMs: 60000
++autoAnnotate: true
++```
++
++设置页的引擎下拉里也有 **Auto（按顺序取第一个可用引擎）**。
++
++## 已知边界
++
++- `web_search` 的工具 schema 在 DSH 核心（`dsh-tool-web`），返回结构固定为 `content + sources[]`；**图片搜索塞不进来**，需要独立工具（另见 `dsh-web-images`）。
++- `include_raw_content` 只在 `keyed` 模式发，keyless 免费额度不支持，避免 400。
++- 免费引擎的 keyless 额度本身很紧，429 依然常见；补丁 1 的重试只能兜一次，不能凭空造额度。
+diff --git a/patches/0001-feat-search-full-text-snippets-visible-provider-erro.patch b/patches/0001-feat-search-full-text-snippets-visible-provider-erro.patch
+new file mode 100644
+index 0000000..2c41b9b
+--- /dev/null
++++ b/patches/0001-feat-search-full-text-snippets-visible-provider-erro.patch
+@@ -0,0 +1,152 @@
++From a2ca3c53a5f5064485ffc9a5c8dd4a8e89faca5f Mon Sep 17 00:00:00 2001
++From: wxcvm <133561272+wxcvm@users.noreply.github.com>
++Date: Fri, 23 Oct 2026 21:56:38 +0800
++Subject: [PATCH 1/4] feat(search): full-text snippets, visible provider
++ errors, one retry, HTML diagnosis
++
++---
++ lib/providers.js |  3 ++
++ lib/rest.js      | 71 ++++++++++++++++++++++++++++++++++++------------
++ 2 files changed, 57 insertions(+), 17 deletions(-)
++
++diff --git a/lib/providers.js b/lib/providers.js
++index 29e41c8..dedf1c0 100644
++--- a/lib/providers.js
+++++ b/lib/providers.js
++@@ -66,6 +66,9 @@ export const REST_PROVIDERS = [
++ 			{ key: "topic", setting: "topic", when: "nonEmpty" },
++ 			{ key: "include_answer", setting: "includeAnswer", when: "nonEmpty" },
++ 			{ key: "include_images", value: false, when: "always" },
+++			// Keyed Tavily can return the whole page as markdown; the generic
+++			// parser upgrades a thin `content` teaser with it (see lib/rest.js).
+++			{ key: "include_raw_content", value: "markdown", when: "keyed" },
++ 			{ key: "include_usage", value: true, when: "keyed" }
++ 		],
++ 		keylessHeaders: { "x-tavily-access-mode": "keyless" },
++diff --git a/lib/rest.js b/lib/rest.js
++index ab50e53..401424a 100644
++--- a/lib/rest.js
+++++ b/lib/rest.js
++@@ -19,6 +19,15 @@ import { WebError } from "@deepseek-ai/dsh-web";
++ import { ProxyAgent } from "undici";
++ import { MAX_RESULTS_CAP, USER_AGENT, isAbortError, resolveApiKey, resolveSecret, searchAborted, throwIfSearchAborted } from "./shared.js";
++ 
+++/** One retry for a transient status: free tiers answer 429/503 constantly. */
+++const RETRY_DELAY_MS = 800;
+++/** Cap on honouring a provider's `Retry-After` header. */
+++const MAX_RETRY_DELAY_MS = 5000;
+++/** A teaser shorter than this is replaced by the provider's full text. */
+++const SNIPPET_UPGRADE_BELOW = 400;
+++/** Hard cap on a snippet built from full page text. */
+++const SNIPPET_CHARS = 1200;
+++
++ /** Acceptable auth templates (superset includes `query` for SerpApi). */
++ const AUTH_TYPES = new Set(["bearer", "header", "none", "query"]);
++ 
++@@ -110,7 +119,7 @@ function mapCustomResponse(json, response) {
++ 	}
++ 	for (const item of results) {
++ 		if (item === null || typeof item !== "object") continue;
++-		const snippet = str(item.content).length > 0
+++		const teaser = str(item.content).length > 0
++ 			? item.content
++ 			: str(item.snippet).length > 0
++ 				? item.snippet
++@@ -123,6 +132,13 @@ function mapCustomResponse(json, response) {
++ 							: Array.isArray(item.extra_snippets) && str(item.extra_snippets[0]).length > 0
++ 								? item.extra_snippets[0]
++ 								: "";
+++		// Providers that can return full page text (Tavily `raw_content`, Firecrawl
+++		// markdown) replace a thin teaser: two lines of snippet is what forces a
+++		// second `web_fetch` round-trip for every single source.
+++		const fullText = str(item.raw_content).length > 0 ? item.raw_content : str(item.markdown).length > 0 ? item.markdown : "";
+++		const snippet = fullText.length > 0 && teaser.length < SNIPPET_UPGRADE_BELOW
+++			? fullText.slice(0, SNIPPET_CHARS)
+++			: teaser;
++ 		pushSource(sources, seen, item, item.title, snippet, item.published_date ?? item.date ?? item.page_age ?? item.publishedDate);
++ 	}
++ 	const answer = str(json.answer).length > 0
++@@ -228,19 +244,28 @@ export class RestSearchProvider {
++ 		else if (keylessWhen === "" || keylessWhen === "always") Object.assign(headers, keylessHeaders);
++ 
++ 		const dispatcher = this.dispatcher(options);
++-		let httpResponse;
++-		try {
++-			httpResponse = await fetch(endpoint, {
++-				method,
++-				redirect: "error",
++-				headers,
++-				...(body !== void 0 ? { body } : {}),
++-				...signal !== void 0 ? { signal } : {},
++-				...dispatcher !== void 0 ? { dispatcher } : {}
++-			});
++-		} catch (error) {
++-			if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
++-			throw new WebError(`Provider "${this.id}" request failed: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
+++		const send = async () => {
+++			try {
+++				return await fetch(endpoint, {
+++					method,
+++					redirect: "error",
+++					headers,
+++					...(body !== void 0 ? { body } : {}),
+++					...signal !== void 0 ? { signal } : {},
+++					...dispatcher !== void 0 ? { dispatcher } : {}
+++				});
+++			} catch (error) {
+++				if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
+++				throw new WebError(`Provider "${this.id}" request failed: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
+++			}
+++		};
+++		let httpResponse = await send();
+++		if (httpResponse.status === 429 || httpResponse.status === 503 || httpResponse.status >= 500) {
+++			const retryAfter = Number(httpResponse.headers.get("retry-after"));
+++			const delay = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, MAX_RETRY_DELAY_MS) : RETRY_DELAY_MS;
+++			await new Promise((resolve) => setTimeout(resolve, delay));
+++			throwIfSearchAborted(signal);
+++			httpResponse = await send();
++ 		}
++ 
++ 		this.hooks.onRateLimit?.(httpResponse.headers);
++@@ -248,15 +273,24 @@ export class RestSearchProvider {
++ 			let message = `Provider "${this.id}" API error (HTTP ${httpResponse.status})`;
++ 			try {
++ 				const parsed = await httpResponse.json();
+++				// Error bodies are not standardized: `{error:"text"}` (OpenAI/xAI),
+++				// `{error:{message}}`, `{detail:{error}}`, or a bare `{code}`.
++ 				const detail = parsed?.detail?.error ?? parsed?.error ?? parsed?.message ?? parsed?.search_metadata?.error;
++-				if (typeof detail === "string" && detail.length > 0) message = detail;
++-				else if (typeof detail === "object" && detail != null && typeof detail.message === "string") message = detail.message;
+++				const detailText = typeof detail === "string" && detail.length > 0
+++					? detail
+++					: typeof detail === "object" && detail != null && typeof detail.message === "string" && detail.message.length > 0
+++						? detail.message
+++						: typeof parsed?.code === "string" && parsed.code.length > 0
+++							? parsed.code
+++							: "";
+++				if (detailText.length > 0) message = `Provider "${this.id}" API error (HTTP ${httpResponse.status}): ${detailText}`;
++ 			} catch {
++ 				/* non-JSON error body — keep the status-line message */
++ 			}
++ 			throw new WebError(message, "WEB_PROVIDER_ERROR");
++ 		}
++ 
+++		const contentType = httpResponse.headers.get("content-type") ?? "";
++ 		try {
++ 			const json = await httpResponse.json();
++ 			if (responseHint === "tavily" && typeof this.hooks.onUsage === "function") {
++@@ -270,7 +304,10 @@ export class RestSearchProvider {
++ 		} catch (error) {
++ 			if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error);
++ 			if (error instanceof WebError) throw error;
++-			throw new WebError(`Provider "${this.id}" returned an unprocessable response body: ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
+++			if (contentType.includes("html")) {
+++				throw new WebError(`Provider "${this.id}" answered with HTML, not JSON - a SearXNG instance with format=json disabled looks like this; point searxngBaseURL at a JSON-enabled instance`, "WEB_PROVIDER_ERROR", { cause: error });
+++			}
+++			throw new WebError(`Provider "${this.id}" returned an unprocessable response body (content-type: ${contentType || "unknown"}): ${String(error)}`, "WEB_PROVIDER_ERROR", { cause: error });
++ 		}
++ 	}
++ 
++-- 
++2.55.0.windows.5
++
+diff --git a/patches/0002-feat-search-auto-routing-with-per-backend-cooldown-a.patch b/patches/0002-feat-search-auto-routing-with-per-backend-cooldown-a.patch
+new file mode 100644
+index 0000000..29476de
+--- /dev/null
++++ b/patches/0002-feat-search-auto-routing-with-per-backend-cooldown-a.patch
+@@ -0,0 +1,220 @@
++From b0a0609b195dda0ffc3248f68943477d920168b1 Mon Sep 17 00:00:00 2001
++From: wxcvm <133561272+wxcvm@users.noreply.github.com>
++Date: Fri, 23 Oct 2026 21:56:38 +0800
++Subject: [PATCH 2/4] feat(search): auto routing with per-backend cooldown and
++ aggregate failures
++
++---
++ lib/client.js | 10 ++++--
++ lib/index.js  | 87 +++++++++++++++++++++++++++++++++++++++++++--------
++ 2 files changed, 82 insertions(+), 15 deletions(-)
++
++diff --git a/lib/client.js b/lib/client.js
++index 90dfeab..cb29600 100644
++--- a/lib/client.js
+++++ b/lib/client.js
++@@ -231,6 +231,8 @@ window.__ModuleLoader__.load({
++ 			providerBrave: "Brave Search",
++ 			providerDeepseek: "DeepSeek Messages search (default)",
++ 			providerApi: "DeepSeek Search API",
+++			providerAuto: "Auto (first working engine)",
+++			autoHint: "Tries the engines in order and falls back on quota, rate limit or failure; a failing engine is skipped for a while. Edit the order in the plugin config (autoOrder).",
++ 			searchHeading: "Search engines",
++ 			fetchHeading: "Web retrieval",
++ 			fetchProvider: "Retrieval method",
++@@ -350,6 +352,8 @@ window.__ModuleLoader__.load({
++ 			providerBrave: "Brave Search",
++ 			providerDeepseek: "DeepSeek Messages 搜索（默认）",
++ 			providerApi: "DeepSeek Search API",
+++			providerAuto: "自动（按顺序取第一个可用引擎）",
+++			autoHint: "按顺序尝试各引擎，额度、限流或失败会自动切下一个；出错的引擎会短暂跳过。顺序在插件配置 autoOrder 里改。",
++ 			searchHeading: "搜索引擎",
++ 			fetchHeading: "网页抓取",
++ 			fetchProvider: "抓取方式",
++@@ -777,7 +781,7 @@ window.__ModuleLoader__.load({
++ 			/** Draft-aware engine: staged `provider` wins over the saved section. */
++ 			providerOf() {
++ 				const declared = this.field("provider").text;
++-				if (declared === API_SEARCH || declared === "tavily" || declared === "brave" || declared === "deepseek-official" || builtinRest(declared) !== void 0) return declared;
+++				if (declared === API_SEARCH || declared === "auto" || declared === "tavily" || declared === "brave" || declared === "deepseek-official" || builtinRest(declared) !== void 0) return declared;
++ 				return "deepseek-official";
++ 			}
++ 			credentialRef(field, fallback) {
++@@ -1229,7 +1233,7 @@ window.__ModuleLoader__.load({
++ 			const { t, state, actions } = props;
++ 			if (!state.available) return null;
++ 			const disabled = !state.writable || state.saving;
++-			const provider = state.provider.text === API_SEARCH || state.provider.text === "tavily" || state.provider.text === "brave" || state.provider.text === "deepseek-official" || builtinRest(state.provider.text) !== void 0 ? state.provider.text : "deepseek-official";
+++			const provider = state.provider.text === API_SEARCH || state.provider.text === "auto" || state.provider.text === "tavily" || state.provider.text === "brave" || state.provider.text === "deepseek-official" || builtinRest(state.provider.text) !== void 0 ? state.provider.text : "deepseek-official";
++ 			const apiSearch = provider === API_SEARCH;
++ 			const fetchProvider = state.fetchProvider.text || "http";
++ 			const apiFetch = fetchProvider === API_FETCH;
++@@ -1284,6 +1288,7 @@ window.__ModuleLoader__.load({
++ 				pair(
++ 					row("provider", t("provider"), null, selectInput({ id: "ws-provider", value: provider, disabled: disabled || !state.selectionWritable, onChange: (e) => actions.edit("provider", e.target.value), children: [
++ 						react.createElement("option", { value: API_SEARCH, key: API_SEARCH, disabled: !state.apiAvailable || !state.apiWritable }, t("providerApi")),
+++						react.createElement("option", { value: "auto", key: "auto" }, t("providerAuto")),
++ 						react.createElement("option", { value: "deepseek-official", key: "deepseek-official" }, t("providerDeepseek")),
++ 						react.createElement("option", { value: "tavily", key: "tavily" }, t("providerTavily")),
++ 						react.createElement("option", { value: "brave", key: "brave" }, t("providerBrave")),
++@@ -1299,6 +1304,7 @@ window.__ModuleLoader__.load({
++ 				apiSearch ? apiConfig() : null,
++ 				apiSearch ? row("webApiCount", t("apiCount"), t("apiCountHint"), numberInput({ id: "ws-api-count", value: state.webApiCount.text, min: 1, max: 50, disabled: disabled || !state.apiWritable, onChange: e => actions.edit("webApiCount", e.target.value) })) : null,
++ 				deepseek ? react.createElement("p", { className: "dshws_field_hint" }, t("messagesHint")) : null,
+++				provider === "auto" ? react.createElement("p", { className: "dshws_field_hint" }, t("autoHint")) : null,
++ 				react.createElement(QuotaCard, { t, provider, keyed }),
++ 				keyConsoleLink(t, provider, restMeta, keyed),
++ 				deepseek ? pair(
++diff --git a/lib/index.js b/lib/index.js
++index 6ffa9db..c73884c 100644
++--- a/lib/index.js
+++++ b/lib/index.js
++@@ -21,6 +21,7 @@
++  * @module dsh-web-search-plugin
++  */
++ import z from "@deepseek-ai/schemastery";
+++import { WebError } from "@deepseek-ai/dsh-web";
++ import { SUPPLIER_CONFIG_ALIASES, resolveSupplierConfig } from "./config.js";
++ import { MAX_RESULTS_CAP } from "./shared.js";
++ import { TAVILY_DEFAULT_API_KEY_ENV, TAVILY_DEFAULT_BASE_URL, TavilySearchProvider, resolveTavilyOptions } from "./tavily.js";
++@@ -68,8 +69,12 @@ const Config = z.object({
++ 	scavioCountry: z.string().volatile(),
++ 	scavioSearchLang: z.string().volatile(),
++ 	// Legacy fields remain accepted for existing profiles.
++-	/** Active backend: `deepseek-official` (default), `tavily`, `brave`, `serper`, `serpapi`, `exa`, `searxng`, `scavio`, or `firecrawl`. */
+++	/** Active backend: `deepseek-official` (default), `auto`, or one REST backend id. */
++ 	provider: z.string().default("deepseek-official").volatile(),
+++	/** `auto` mode: comma-separated backend ids tried in order until one answers. */
+++	autoOrder: z.string().default("tavily,brave,serper,exa,searxng,firecrawl,deepseek-official").volatile(),
+++	/** `auto` mode: how long a backend that just failed is skipped, in milliseconds. */
+++	autoCooldownMs: z.number().step(1000).min(0).default(60000).volatile(),
++ 	/** Tavily auth mode: `keyless` (default) or `keyed`. */
++ 	mode: z.string().default("keyless").volatile(),
++ 	/** Literal Tavily API key; prefer {@link apiKeyEnv}. */
++@@ -166,32 +171,85 @@ class PluginSearchProvider {
++ 				onRateLimit: providerId === "brave" ? (headers) => usage?.recordBraveHeaders(headers) : void 0
++ 			}));
++ 		}
+++		/** Backend id -> epoch ms until which `auto` skips it. */
+++		this.cooldownUntil = new Map();
++ 	}
++ 
++ 	available() {
++-		return this.backend().available();
+++		const options = this.resolveOptions();
+++		if (options.provider !== "auto") return this.backend().available();
+++		return (options.autoOrder ?? []).some((id) => this.backendFor(id)?.available() === true);
++ 	}
++ 
++ 	async search(request, signal) {
++-		return this.backend().search(request, signal);
+++		const options = this.resolveOptions();
+++		if (options.provider !== "auto") return this.backend().search(request, signal);
+++		return this.searchAuto(options, request, signal);
++ 	}
++ 
++-	backend() {
++-		const options = this.resolveOptions();
++-		const provider = options.provider;
++-		const restInstance = this.rest.get(provider);
+++	/**
+++	 * `auto` routing: first backend that returns results wins. A backend that
+++	 * throws (quota, auth, rate limit, network) is cooled down instead of
+++	 * failing the call, so one dead engine never costs the model a turn.
+++	 */
+++	async searchAuto(options, request, signal) {
+++		const failures = [];
+++		const now = Date.now();
+++		for (const id of options.autoOrder ?? []) {
+++			const backend = this.backendFor(id);
+++			if (backend === void 0 || !backend.available()) continue;
+++			if ((this.cooldownUntil.get(id) ?? 0) > now) {
+++				failures.push(`${id}: cooling down`);
+++				continue;
+++			}
+++			try {
+++				const result = await backend.search(request, signal);
+++				if (result.sources.length > 0) {
+++					this.cooldownUntil.delete(id);
+++					return result;
+++				}
+++				failures.push(`${id}: no results`);
+++			} catch (error) {
+++				if (signal?.aborted === true) throw error;
+++				this.cooldownUntil.set(id, Date.now() + (options.autoCooldownMs ?? 60000));
+++				failures.push(`${id}: ${error instanceof Error ? error.message : String(error)}`);
+++			}
+++		}
+++		throw new WebError(`auto search found no usable backend (${failures.join("; ") || "none available"})`, "WEB_PROVIDER_ERROR");
+++	}
+++
+++	/** Resolve one backend id to its instance (`auto` walks this). */
+++	backendFor(id) {
+++		const restInstance = this.rest.get(id);
++ 		if (restInstance !== void 0) return restInstance;
++-		if (provider === "deepseek-official") return this.deepseek;
++-		// Fallback: provider points at something unknown → official default.
++-		return this.deepseek;
+++		if (id === "deepseek-official") return this.deepseek;
+++		return void 0;
+++	}
+++
+++	backend() {
+++		// Fallback: an unknown provider id routes to the official default.
+++		return this.backendFor(this.resolveOptions().provider) ?? this.deepseek;
+++	}
+++}
+++
+++/** Split `autoOrder` into known backend ids, order preserved, duplicates dropped. */
+++function parseAutoOrder(raw) {
+++	const ids = [];
+++	for (const part of String(raw ?? "").split(",")) {
+++		const id = part.trim();
+++		if (id.length === 0 || ids.includes(id)) continue;
+++		if (id !== "deepseek-official" && !BUILTIN_REST_IDS.includes(id)) continue;
+++		ids.push(id);
++ 	}
+++	return ids;
++ }
++ 
++ /** Project one resolved section into options for each backend. */
++ function resolveOptions(ctx, config) {
++ 	config = resolveSupplierConfig(config);
++-	const isBuiltIn = config.provider === "tavily" || config.provider === "brave" || config.provider === "deepseek-official" || BUILTIN_REST_IDS.includes(config.provider);
+++	const isBuiltIn = config.provider === "tavily" || config.provider === "brave" || config.provider === "deepseek-official" || config.provider === "auto" || BUILTIN_REST_IDS.includes(config.provider);
++ 	const provider = isBuiltIn ? config.provider : "deepseek-official";
+++	const autoOrder = provider === "auto" ? parseAutoOrder(config.autoOrder) : [];
++ 	const tavily = provider === "tavily" ? resolveTavilyOptions(ctx, config) : void 0;
++ 	// Per-provider literal key / optional endpoint override, used when the
++ 	// metadata row's default is not enough (self-hosted SearXNG, proxied
++@@ -215,7 +273,7 @@ function resolveOptions(ctx, config) {
++ 		includeAnswer: config.tavilyIncludeAnswer
++ 	};
++ 	const rest = {};
++-	for (const providerId of provider === "deepseek-official" ? [] : [provider]) {
+++	for (const providerId of provider === "deepseek-official" ? [] : provider === "auto" ? autoOrder : [provider]) {
++ 		const row = findProvider(providerId);
++ 		if (row === void 0) continue;
++ 		const source = keySourceByProvider[providerId] ?? {};
++@@ -232,7 +290,8 @@ function resolveOptions(ctx, config) {
++ 	}
++ 	return {
++ 		provider,
++-		deepseek: provider === "deepseek-official" ? resolveDeepseekOptions(ctx, config) : void 0,
+++		autoOrder,
+++		deepseek: provider === "deepseek-official" || provider === "auto" ? resolveDeepseekOptions(ctx, config) : void 0,
++ 		tavily,
++ 		brave: provider === "brave" ? resolveBraveOptions(ctx, config) : void 0,
++ 		rest
++@@ -285,6 +344,8 @@ function readSection(config) {
++ 	return {
++ 		...Object.fromEntries(Object.keys(SUPPLIER_CONFIG_ALIASES).map((field) => [field, config[field].get()])),
++ 		provider: config.provider.get(),
+++		autoOrder: config.autoOrder.get(),
+++		autoCooldownMs: config.autoCooldownMs.get(),
++ 		mode: config.mode.get(),
++ 		apiKey: config.apiKey.get(),
++ 		apiKeyEnv: config.apiKeyEnv.get(),
++-- 
++2.55.0.windows.5
++
+diff --git a/patches/0003-feat-search-label-the-backend-auto-actually-used.patch b/patches/0003-feat-search-label-the-backend-auto-actually-used.patch
+new file mode 100644
+index 0000000..0322aba
+--- /dev/null
++++ b/patches/0003-feat-search-label-the-backend-auto-actually-used.patch
+@@ -0,0 +1,53 @@
++From faadb7d4a491167a5058401a2021f6c87e9f786c Mon Sep 17 00:00:00 2001
++From: wxcvm <133561272+wxcvm@users.noreply.github.com>
++Date: Fri, 23 Oct 2026 21:56:38 +0800
++Subject: [PATCH 3/4] feat(search): label the backend auto actually used
++
++---
++ lib/index.js | 9 ++++++++-
++ 1 file changed, 8 insertions(+), 1 deletion(-)
++
++diff --git a/lib/index.js b/lib/index.js
++index c73884c..672c3ab 100644
++--- a/lib/index.js
+++++ b/lib/index.js
++@@ -75,6 +75,8 @@ const Config = z.object({
++ 	autoOrder: z.string().default("tavily,brave,serper,exa,searxng,firecrawl,deepseek-official").volatile(),
++ 	/** `auto` mode: how long a backend that just failed is skipped, in milliseconds. */
++ 	autoCooldownMs: z.number().step(1000).min(0).default(60000).volatile(),
+++	/** `auto` mode: append the backend that answered to the result content. */
+++	autoAnnotate: z.boolean().default(true).volatile(),
++ 	/** Tavily auth mode: `keyless` (default) or `keyed`. */
++ 	mode: z.string().default("keyless").volatile(),
++ 	/** Literal Tavily API key; prefer {@link apiKeyEnv}. */
++@@ -206,7 +208,9 @@ class PluginSearchProvider {
++ 				const result = await backend.search(request, signal);
++ 				if (result.sources.length > 0) {
++ 					this.cooldownUntil.delete(id);
++-					return result;
+++					if (options.autoAnnotate === false) return result;
+++					const note = `(auto: ${id})`;
+++					return { ...result, content: result.content === void 0 || result.content.length === 0 ? note : `${result.content}\n\n${note}` };
++ 				}
++ 				failures.push(`${id}: no results`);
++ 			} catch (error) {
++@@ -291,6 +295,8 @@ function resolveOptions(ctx, config) {
++ 	return {
++ 		provider,
++ 		autoOrder,
+++		autoAnnotate: config.autoAnnotate !== false,
+++		autoCooldownMs: config.autoCooldownMs ?? 60000,
++ 		deepseek: provider === "deepseek-official" || provider === "auto" ? resolveDeepseekOptions(ctx, config) : void 0,
++ 		tavily,
++ 		brave: provider === "brave" ? resolveBraveOptions(ctx, config) : void 0,
++@@ -346,6 +352,7 @@ function readSection(config) {
++ 		provider: config.provider.get(),
++ 		autoOrder: config.autoOrder.get(),
++ 		autoCooldownMs: config.autoCooldownMs.get(),
+++		autoAnnotate: config.autoAnnotate.get(),
++ 		mode: config.mode.get(),
++ 		apiKey: config.apiKey.get(),
++ 		apiKeyEnv: config.apiKeyEnv.get(),
++-- 
++2.55.0.windows.5
++
+diff --git a/patches/0004-docs-patch-notes-with-apply-and-rollback-steps.patch b/patches/0004-docs-patch-notes-with-apply-and-rollback-steps.patch
+new file mode 100644
+index 0000000..ba8ab8f
+--- /dev/null
++++ b/patches/0004-docs-patch-notes-with-apply-and-rollback-steps.patch
+@@ -0,0 +1,133 @@
++From b84a096df7258ad0069369178cfb566c31fa5139 Mon Sep 17 00:00:00 2001
++From: wxcvm <133561272+wxcvm@users.noreply.github.com>
++Date: Fri, 23 Oct 2026 21:56:38 +0800
++Subject: [PATCH 4/4] docs: patch notes with apply and rollback steps
++
++---
++ docs/README-patch.md | 114 +++++++++++++++++++++++++++++++++++++++++++
++ 1 file changed, 114 insertions(+)
++ create mode 100644 docs/README-patch.md
++
++diff --git a/docs/README-patch.md b/docs/README-patch.md
++new file mode 100644
++index 0000000..bf1375e
++--- /dev/null
+++++ b/docs/README-patch.md
++@@ -0,0 +1,114 @@
+++# dsh-web-search-plugin 0.6.0 → 0.6.0-pro
+++
+++对 `dsh-web-search-plugin@0.6.0` 的小改，目标是**少一轮 web_fetch、少一次瞎猜、少一次因为单个引擎挂了就失败**。
+++
+++- 补丁 1（稳健性）：`dsh-web-search-plugin-0.6.0-pro.patch`（6.8 KB）
+++- 补丁 2（自动路由）：`auto-routing.patch`（22 KB，打在补丁 1 之上）
+++- 一次到位：`combined-pro.patch`（36 KB，直接打在 0.6.0 原版上）
+++- 改后全文：`wsp-patch/lib/{providers,rest,index,client}.js`
+++- 基线：`C:\Users\Kerna\.dsh\profiles\desktop\node_modules\dsh-web-search-plugin`（v0.6.0）
+++- 依赖：无新增。`providers.js +3`、`rest.js +57/−17`、`index.js +82/−15`、`client.js +10/−2`
+++
+++## 补丁 2：`auto` 自动路由
+++
+++以前 `provider` 只能填一个引擎，那个引擎挂了（限流、没 key、额度空）整次搜索就废。现在多了 `auto`：
+++
+++- **顺序尝试**，第一个返回结果的赢
+++- **失败冷却**：抛错的引擎进黑名单 `autoCooldownMs`（默认 60 秒），期间跳过
+++- **0 结果也算失败**，继续下一个
+++- **全挂时报聚合错误**，每个引擎的失败原因列在一行里
+++- 顺序可配：`autoOrder`，默认 `tavily,brave,serper,exa,searxng,firecrawl,deepseek-official`
+++
+++> `deepseek-official` 排在最后是刻意的：它每搜一次是一整个模型轮次（实测 ~12s、按 token 计费），只配当兜底。
+++
+++配置项（`cordis.patch.yml` 或设置卡片保存的 section）：
+++
+++```yaml
+++provider: auto
+++autoOrder: "tavily,brave,serper,exa,searxng,firecrawl,deepseek-official"
+++autoCooldownMs: 60000
+++```
+++
+++设置页的引擎下拉里也多了 **Auto（按顺序取第一个可用引擎）**，选中后下方有说明文字。
+++
+++## 补丁 1：稳健性
+++
+++### 1. 有 key 的 Tavily 现在会取正文
+++`providers.js`，Tavily 的 `params` 里加了一条（`when: "keyed"`，无 key 的 keyless 模式不受影响，避免 400）：
+++
+++```js
+++{ key: "include_raw_content", value: "markdown", when: "keyed" }
+++```
+++
+++配套在 `rest.js` 里把 `raw_content` / `markdown` 映射进 `snippet`：**短于 400 字的 teaser 会被整段正文替换，上限 1200 字**。以前每条只有两行，逼得每次都要再 `web_fetch` 一遍。
+++
+++### 2. 错误信息不再被吞
+++以前：
+++
+++```
+++Provider "xai" API error (HTTP 403)
+++```
+++
+++现在（`{code, error:"字符串"}`、`{error:{message}}`、`{detail:{error}}` 都能取到，并带上 provider id）：
+++
+++```
+++Provider "tavily" API error (HTTP 403): personal-team-blocked:spending-limit
+++```
+++
+++### 3. 429/503/5xx 重试一次
+++按 `Retry-After` 退避（上限 5s），没有该头就等 800ms 再打一次。免费引擎的 429 太常见，直接抛给模型等于浪费一整个回合。
+++
+++### 4. SearXNG 返回 HTML 时说人话
+++`searx.be` 已经关了 `format=json`，以前只会抛 `unprocessable response body`。现在会明确说：
+++
+++> answered with HTML, not JSON - a SearXNG instance with format=json disabled looks like this; point searxngBaseURL at a JSON-enabled instance
+++
+++顺带在所有解析失败里带上 `content-type`，方便判断是反爬还是格式变更。
+++
+++## 怎么用
+++
+++### 方式 A：打补丁到现有安装（临时、会被升级覆盖）
+++
+++```powershell
+++$p = "C:\Users\Kerna\.dsh\profiles\desktop\node_modules\dsh-web-search-plugin"
+++Copy-Item $p "$p.bak" -Recurse -Force
+++cd $p
+++git apply "D:\deepseek\dsh-plugins\dsh-web-search-plugin-0.6.0-pro.patch"
+++```
+++
+++回滚：`Remove-Item $p -Recurse -Force; Move-Item "$p.bak" $p`
+++
+++> 该目录不是 git 仓库，`git apply` 仍可用（它只读 patch，不要求仓库）。若报 `not a git repository`，改用 `patch -p1 < ...` 或直接拷贝 `wsp-patch/lib/*.js` 覆盖。
+++
+++### 方式 B：直接覆盖文件（最省事）
+++
+++```powershell
+++$p = "C:\Users\Kerna\.dsh\profiles\desktop\node_modules\dsh-web-search-plugin\lib"
+++Copy-Item "D:\deepseek\dsh-plugins\wsp-patch\lib\providers.js" $p -Force
+++Copy-Item "D:\deepseek\dsh-plugins\wsp-patch\lib\rest.js" $p -Force
+++```
+++
+++改完**重启 DSH**（web profile 关了 HMR，刷新页面不够）。
+++
+++### 方式 C：做成自己的 fork（推荐长期）
+++
+++```powershell
+++Copy-Item "C:\Users\Kerna\.dsh\profiles\desktop\node_modules\dsh-web-search-plugin" "D:\dsh-plugins\dsh-web-search-plugin-pro" -Recurse
+++# 改 package.json 的 name 为 dsh-web-search-plugin-pro，避免和上游同包名
+++# 把 patched 的两个 lib 文件覆盖进去
+++# 然后在 cordis.patch.yml 里把原插件那一行换成新名字
+++```
+++
+++## 验证
+++
+++```powershell
+++node --check lib/providers.js
+++node --check lib/rest.js
+++```
+++
+++两条都过。补丁已用 `git apply --check` 在 0.6.0 原样副本上验证过：干净应用。
+++
+++## 还没做的（留给下一步）
+++
+++- 结果缓存（5 分钟 LRU）——要动 `index.js` 的路由层，改动比现在这四处大
+++- 真正的图片搜索——`web_search` 的 schema 在 `dsh-tool-web`，插件层塞不进去；已由 `dsh-web-images` 独立工具覆盖
++-- 
++2.55.0.windows.5
++
+-- 
+2.55.0.windows.5
+

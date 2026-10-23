@@ -1,7 +1,7 @@
 From b84a096df7258ad0069369178cfb566c31fa5139 Mon Sep 17 00:00:00 2001
 From: wxcvm <133561272+wxcvm@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 21:56:38 +0800
-Subject: [PATCH 4/4] docs: patch notes with apply and rollback steps
+Subject: [PATCH 4/5] docs: patch notes with apply and rollback steps
 
 ---
  docs/README-patch.md | 114 +++++++++++++++++++++++++++++++++++++++++++

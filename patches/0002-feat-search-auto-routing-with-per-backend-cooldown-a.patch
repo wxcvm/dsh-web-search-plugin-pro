@@ -1,7 +1,7 @@
 From b0a0609b195dda0ffc3248f68943477d920168b1 Mon Sep 17 00:00:00 2001
 From: wxcvm <133561272+wxcvm@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 21:56:38 +0800
-Subject: [PATCH 2/4] feat(search): auto routing with per-backend cooldown and
+Subject: [PATCH 2/5] feat(search): auto routing with per-backend cooldown and
  aggregate failures
 
 ---

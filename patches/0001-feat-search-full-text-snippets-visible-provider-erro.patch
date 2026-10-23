@@ -1,7 +1,7 @@
 From a2ca3c53a5f5064485ffc9a5c8dd4a8e89faca5f Mon Sep 17 00:00:00 2001
 From: wxcvm <133561272+wxcvm@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 21:56:38 +0800
-Subject: [PATCH 1/4] feat(search): full-text snippets, visible provider
+Subject: [PATCH 1/5] feat(search): full-text snippets, visible provider
  errors, one retry, HTML diagnosis
 
 ---
